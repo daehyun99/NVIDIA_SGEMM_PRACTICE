@@ -17,28 +17,28 @@ __global__ void mysgemm_v2(int M, int N, int K, float alpha, float *A, float *B,
     int tx = threadIdx.x % BN;
     int ty = threadIdx.x / BN;
 
-    // 申请共享内存空间
+    // 공유 메모리 공간 할당
     __shared__ float As[BM * BK];
     __shared__ float Bs[BK * BN];
 
-    // 移动到当前block
+    // 현재 블록으로 포인터 이동
     A = &A[by * BM * K];
     B = &B[bx * BN];
     C = &C[by * BM * N + bx * BN];
 
     float tmp = 0.;
     for (int k = 0; k < K; k += BK) {
-        // 缓存A_tile和B_tile
+        // A/B 타일 캐시
         As[ty * BK + tx] = A[ty * K + tx];
         Bs[ty * BN + tx] = B[ty * N + tx];
-        // 同步所有线程缓存完成
+        // 모든 스레드 캐시 완료 동기화
         __syncthreads();
         A += BK;
         B += BK * N;
         for (int i = 0; i < BK; i++) {
             tmp += As[ty * BK + i] * Bs[i * BN + tx];
         }
-        // FMA计算需要读取缓存数据，在新一轮写入缓存前进行同步，确保所有线程计算完成
+        // FMA 계산은 캐시 데이터를 읽으므로, 다음 라운드 캐시 쓰기 전에 동기화하여 모든 스레드 연산 완료를 보장
         __syncthreads();
     }
     C[ty * N + tx] = alpha * tmp + beta * C[ty * N + tx];

@@ -19,9 +19,9 @@ __global__ void mysgemm_v6(int M, int N, int K, float alpha, float *A, float *B,
 
     const int block_row_thread = BN / TN;
     const int block_col_thread = BM / TM;
-    const int thread_num = block_row_thread * block_col_thread; // 一个线程负责计算block中TM*TN个元素
+    const int thread_num = block_row_thread * block_col_thread; // 스레드 1개가 블록 내 TM*TN개 원소 계산 담당
 
-    // 当前线程对应thread tile的左上角元素在block中的位置
+    // 현재 스레드가 담당하는 thread tile 좌상단 원소의 블록 내 위치
     int tx = (threadIdx.x % block_row_thread) * TN;
     int ty = (threadIdx.x / block_row_thread) * TM;
 
@@ -29,26 +29,26 @@ __global__ void mysgemm_v6(int M, int N, int K, float alpha, float *A, float *B,
     __shared__ float Bs[BK * BN];
 
 
-    const int ldg_a_num = BK * BM / thread_num / 4; // 每个线程搬运4个浮点数，完成搬运至As需要所有线程搬运ldg_a_num轮
-    const int ldg_b_num = BK * BN / thread_num / 4; // 每个线程搬运4个浮点数，完成搬运至Bs需要所有线程搬运ldg_b_num轮
+    const int ldg_a_num = BK * BM / thread_num / 4; // 스레드마다 float 4개를 옮기며 As 로딩 완료까지 총 ldg_a_num 라운드 수행
+    const int ldg_b_num = BK * BN / thread_num / 4; // 스레드마다 float 4개를 옮기며 Bs 로딩 완료까지 총 ldg_b_num 라운드 수행
 
-    int a_tile_row = threadIdx.x / (BK / 4); // 每行4个字节作为一个内存块，当前线程负责第a_tile_row行的第a_tile_col个内存块的搬运
+    int a_tile_row = threadIdx.x / (BK / 4); // 행당 4바이트 단위를 메모리 블록으로 보고, 현재 스레드는 a_tile_row행의 a_tile_col 블록을 옮깁니다
     int a_tile_col = threadIdx.x % (BK / 4) * 4;
-    int a_tile_stride = BM / ldg_a_num; // 一共BM行，搬运ldg_a_num轮，每论搬运a_tile_stride行
+    int a_tile_stride = BM / ldg_a_num; // 총 BM행을 ldg_a_num 라운드로 나누어 라운드당 a_tile_stride행씩 옮깁니다
 
-    int b_tile_row = threadIdx.x / (BN / 4); // 每行4个字节作为一个内存块，当前线程负责第b_tile_row行的第b_tile_col个内存块的搬运
+    int b_tile_row = threadIdx.x / (BN / 4); // 행당 4바이트 단위를 메모리 블록으로 보고, 현재 스레드는 b_tile_row행의 b_tile_col 블록을 옮깁니다
     int b_tile_col = threadIdx.x % (BN / 4) * 4;
-    int b_tile_stride = BK / ldg_b_num; // 一共BK行，搬运ldg_b_num轮，每论搬运b_tile_stride行
+    int b_tile_stride = BK / ldg_b_num; // 총 BK행을 ldg_b_num 라운드로 나누어 라운드당 b_tile_stride행씩 옮깁니다
 
-    float accum[TM][TN] = {0.}; // 每个线程负责TM*TN个元素，则需要申请TM*TN个寄存器保存累加值，额外的一个寄存器用于缓存；
+    float accum[TM][TN] = {0.}; // 스레드당 TM*TN개 원소 계산을 위해 누산값 저장 레지스터 TM*TN개(및 추가 캐시 레지스터)가 필요합니다.
 
-    // 计算ldg_a_num的所有参数必须全部是const，否则不能用来申明数组大小
-    float ldg_a_reg[4 * ldg_a_num] = {0.}; // 每个线程搬运ldg_a_num轮，寄存器缓存ldg_a_num个float4元素，用于转置As矩阵
+    // ldg_a_num 계산에 쓰는 모든 파라미터는 const여야 배열 크기 선언에 사용할 수 있습니다
+    float ldg_a_reg[4 * ldg_a_num] = {0.}; // 각 스레드는 ldg_a_num 라운드 동안 ldg_a_num개의 float4를 레지스터에 저장해 As 전치에 사용
 
-    float a_frag[TM];  // 缓存As共享内存
-    float b_frag[TN];  // 缓存Bs共享内存
+    float a_frag[TM];  // As 공유 메모리 캐시
+    float b_frag[TN];  // Bs 공유 메모리 캐시
 
-    // 移动到当前block
+    // 현재 블록으로 포인터 이동
     A = &A[by * BM * K];
     B = &B[bx * BN];
     C = &C[by * BM * N + bx * BN];
@@ -57,10 +57,10 @@ __global__ void mysgemm_v6(int M, int N, int K, float alpha, float *A, float *B,
     for (int k = 0; k < K; k += BK) {
 #pragma unroll
         for (int i = 0; i < BM; i += a_tile_stride) {
-            int ldg_index = i / a_tile_stride * 4;  // 第ldg_index轮
+            int ldg_index = i / a_tile_stride * 4;  // ldg_index번째 라운드
             FETCH_FLOAT4(ldg_a_reg[ldg_index]) =
                     FETCH_FLOAT4(A[OFFSET(a_tile_row + i, a_tile_col, K)]);
-            // As转置存，其中ldg_a_reg做中间缓存，目的是读取时可以按FLOAT4读取
+            // As를 전치 저장합니다. ldg_a_reg는 중간 캐시이며 읽기 시 FLOAT4 로드를 가능하게 합니다
             As[OFFSET(a_tile_col, i + a_tile_row, BM)] = ldg_a_reg[ldg_index];
             As[OFFSET(a_tile_col + 1, i + a_tile_row, BM)] = ldg_a_reg[ldg_index + 1];
             As[OFFSET(a_tile_col + 2, i + a_tile_row, BM)] = ldg_a_reg[ldg_index + 2];
@@ -69,7 +69,7 @@ __global__ void mysgemm_v6(int M, int N, int K, float alpha, float *A, float *B,
 #pragma unroll
         for (int i = 0; i < BK; i += b_tile_stride) {
             FETCH_FLOAT4(Bs[OFFSET(b_tile_row + i, b_tile_col, BN)]) =
-                    FETCH_FLOAT4(B[OFFSET(b_tile_row + i, b_tile_col, N)]); // 不需要转置
+                    FETCH_FLOAT4(B[OFFSET(b_tile_row + i, b_tile_col, N)]); // 전치 불필요
         }
         __syncthreads();
         A += BK;
@@ -78,11 +78,11 @@ __global__ void mysgemm_v6(int M, int N, int K, float alpha, float *A, float *B,
         for (int i = 0; i < BK; i++) {
 #pragma unroll
             for (int m = 0; m < TM; m += 4) {
-                FETCH_FLOAT4(a_frag[m]) = FETCH_FLOAT4(As[OFFSET(i, ty + m, BM)]); // 偏移到当前thread tile
+                FETCH_FLOAT4(a_frag[m]) = FETCH_FLOAT4(As[OFFSET(i, ty + m, BM)]); // 현재 thread tile 위치로 오프셋
             }
 #pragma unroll
             for (int n = 0; n < TN; n += 4) {
-                FETCH_FLOAT4(b_frag[n]) = FETCH_FLOAT4(Bs[OFFSET(i, tx + n, BN)]); // 偏移到当前thread tile
+                FETCH_FLOAT4(b_frag[n]) = FETCH_FLOAT4(Bs[OFFSET(i, tx + n, BN)]); // 현재 thread tile 위치로 오프셋
             }
 #pragma unroll
             for (int m = 0; m < TM; m++) {
