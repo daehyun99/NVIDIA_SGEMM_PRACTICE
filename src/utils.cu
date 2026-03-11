@@ -61,7 +61,7 @@ void CudaDeviceInfo() {
 };
 
 void randomize_matrix(float *mat, int N) {
-    // NOTICE: 使用gettimeofdays替代srand((unsigned)time(NULL));time精度过低，产生相同随机数
+    // 참고: srand((unsigned)time(NULL)) 대신 gettimeofday를 사용합니다. time 정밀도가 낮아 같은 난수가 생성될 수 있습니다.
     struct timeval time;
     gettimeofday(&time, NULL);
     srand(time.tv_usec);
@@ -112,7 +112,7 @@ bool verify_matrix(float *mat1, float *mat2, int N) {
 #define CEIL_DIV(M, N) ((M) + (N)-1) / (N)
 
 void test_cublas(cublasHandle_t handle, int M, int N, int K, float alpha, float *A, float *B, float beta, float *C) {
-    //cublas列主序计算：https://www.cnblogs.com/cuancuancuanhao/p/7763256.html
+    // cublas는 열 우선(column-major) 기준으로 계산합니다: https://www.cnblogs.com/cuancuancuanhao/p/7763256.html
     cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, A, K, &beta, C, N);
 }
 
